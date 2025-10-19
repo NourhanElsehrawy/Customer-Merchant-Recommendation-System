@@ -54,7 +54,7 @@ A machine learning recommendation system built with Amazon Electronics dataset t
 
 - **Python**: pandas, numpy, scikit-learn
 - **Machine Learning**: SVD, NMF, TF-IDF, cosine similarity  
-- **Data Processing**: Apache Airflow (optional)
+- **Data Processing**: Apache Airflow 
 - **Visualization**: matplotlib
 
 ## Results
