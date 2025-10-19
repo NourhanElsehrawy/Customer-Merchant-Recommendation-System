@@ -26,8 +26,8 @@ data/*.gz
 data/*.json
 data/*.csv
 data/*.parquet
-data/raw/
-data/processed/
+data/features/
+ata/features/*
 
 # Model Files (usually too large for git)
 models/*.pkl
