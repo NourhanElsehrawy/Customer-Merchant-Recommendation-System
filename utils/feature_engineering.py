@@ -88,28 +88,38 @@ def create_interaction_features(df, user_feats=None, item_feats=None):
     return inter.fillna(0)
 
 
-def create_sparse_interaction_matrix(df, min_interactions=5):
-    """Efficient sparse user-item matrix with improvements"""
-    log.info("Creating sparse interaction matrix...")
+def create_sparse_interaction_matrix(df, products_df, min_interactions=5):
+    """Efficient sparse customer-merchant matrix"""
+    log.info("Creating sparse customer-merchant interaction matrix...")
     
     # Validate input
     if df.empty or 'reviewerid' not in df.columns or 'asin' not in df.columns:
         log.warning("Invalid input data for interaction matrix")
         return csr_matrix((0, 0)), np.array([]), np.array([])
     
-    # Filter by minimum interactions
+    if products_df is None or 'brand' not in products_df.columns:
+        log.warning("Products data with brand info required for merchant matrix")
+        return csr_matrix((0, 0)), np.array([]), np.array([])
+    
+    # Merge with products to get merchant info
+    df_with_merchants = df.merge(products_df[['asin', 'brand']], on='asin', how='left')
+    df_with_merchants = df_with_merchants.dropna(subset=['brand'])
+    
     log.info(f"Original data: {len(df):,} interactions")
-    user_counts = df['reviewerid'].value_counts()
-    item_counts = df['asin'].value_counts()
-    log.info(f"Users with >={min_interactions} interactions: {sum(user_counts >= min_interactions):,}")
-    log.info(f"Items with >={min_interactions} interactions: {sum(item_counts >= min_interactions):,}")
+    log.info(f"With merchant info: {len(df_with_merchants):,} interactions")
     
-    active_users = user_counts[user_counts >= min_interactions].index
-    active_items = item_counts[item_counts >= min_interactions].index
+    # Filter by minimum interactions
+    customer_counts = df_with_merchants['reviewerid'].value_counts()
+    merchant_counts = df_with_merchants['brand'].value_counts()
+    log.info(f"Customers with >={min_interactions} interactions: {sum(customer_counts >= min_interactions):,}")
+    log.info(f"Merchants with >={min_interactions} interactions: {sum(merchant_counts >= min_interactions):,}")
     
-    filtered_df = df[
-        df['reviewerid'].isin(active_users) & 
-        df['asin'].isin(active_items)
+    active_customers = customer_counts[customer_counts >= min_interactions].index
+    active_merchants = merchant_counts[merchant_counts >= min_interactions].index
+    
+    filtered_df = df_with_merchants[
+        df_with_merchants['reviewerid'].isin(active_customers) & 
+        df_with_merchants['brand'].isin(active_merchants)
     ].copy()
     
     log.info(f"After filtering: {len(filtered_df):,} interactions")
@@ -118,65 +128,83 @@ def create_sparse_interaction_matrix(df, min_interactions=5):
         log.warning("No interactions remain after filtering")
         return csr_matrix((0, 0)), np.array([]), np.array([])
     
-    # Handle duplicates by taking mean rating
-    before_dedup = len(filtered_df)
-    filtered_df = filtered_df.groupby(['reviewerid', 'asin'])['overall'].mean().reset_index()
-    log.info(f"After deduplication: {len(filtered_df):,} interactions (removed {before_dedup - len(filtered_df):,} duplicates)")
+    # Aggregate customer-merchant interactions (mean rating + interaction count bonus)
+    customer_merchant_agg = filtered_df.groupby(['reviewerid', 'brand']).agg({
+        'overall': ['mean', 'count']
+    }).reset_index()
+    
+    customer_merchant_agg.columns = ['reviewerid', 'brand', 'mean_rating', 'interaction_count']
+    customer_merchant_agg['interaction_score'] = (
+        customer_merchant_agg['mean_rating'] * 0.7 + 
+        customer_merchant_agg['interaction_count'] * 0.3
+    )
+    
+    log.info(f"Aggregated to {len(customer_merchant_agg):,} customer-merchant pairs")
     
     # Create categorical mappings
-    users = pd.Categorical(filtered_df['reviewerid'])
-    items = pd.Categorical(filtered_df['asin'])
-    values = filtered_df['overall'].astype('float32')
+    customers = pd.Categorical(customer_merchant_agg['reviewerid'])
+    merchants = pd.Categorical(customer_merchant_agg['brand'])
+    values = customer_merchant_agg['interaction_score'].astype('float32')
     
-    # Debug: Check data before matrix creation
-    log.info(f"Building matrix from {len(filtered_df):,} interactions")
-    log.info(f"User codes range: {users.codes.min()} to {users.codes.max()}")
-    log.info(f"Item codes range: {items.codes.min()} to {items.codes.max()}")
-    log.info(f"Rating values range: {values.min():.1f} to {values.max():.1f}")
+    # Create sparse matrix
+    n_customers = len(customers.categories)
+    n_merchants = len(merchants.categories)
     
-    # Create sparse matrix - fix the shape issue
-    n_users = len(users.categories)
-    n_items = len(items.categories)
+    mat = csr_matrix((values, (customers.codes, merchants.codes)), shape=(n_customers, n_merchants))
     
-    mat = csr_matrix((values, (users.codes, items.codes)), shape=(n_users, n_items))
-    
-    # Verify matrix has data
-    if mat.nnz == 0:
-        log.error("Matrix has no non-zero entries! Check input data.")
-        log.error(f"Input values: min={values.min()}, max={values.max()}, count={len(values)}")
-    
-    density = mat.nnz / (n_users * n_items) if n_users > 0 and n_items > 0 else 0
-    log.info(f"Sparse matrix: {n_users:,} users × {n_items:,} items ({density*100:.3f}% density)")
+    density = mat.nnz / (n_customers * n_merchants) if n_customers > 0 and n_merchants > 0 else 0
+    log.info(f"Customer-Merchant matrix: {n_customers:,} customers × {n_merchants:,} merchants ({density*100:.3f}% density)")
     log.info(f"Non-zero entries: {mat.nnz:,}")
     
-    return mat, users.categories, items.categories
+    return mat, customers.categories, merchants.categories
 
 
 
 def create_all_features(reviews_df, products_df=None, cutoff_date=None, save_path=None):
-    """Main feature pipeline"""
-    log.info("Starting feature creation...")
+    """Main feature pipeline - creates customer-merchant features"""
+    log.info("Starting customer-merchant feature creation...")
     df = optimize_dtypes(apply_temporal_cutoff(reviews_df, cutoff_date))
 
     user_feats = create_user_features(df)
     item_feats = create_item_features(df, products_df)
     inter_feats = create_interaction_features(df, user_feats, item_feats)
-    sparse_mat, users, items = create_sparse_interaction_matrix(df)
+    
+    # Create customer-merchant interaction matrix
+    merchant_matrix, customers, merchants = create_sparse_interaction_matrix(df, products_df)
+    
+    # Create merchant features
+    if products_df is not None and 'brand' in products_df.columns:
+        df_with_merchants = df.merge(products_df[['asin', 'brand']], on='asin', how='left')
+        df_with_merchants = df_with_merchants.dropna(subset=['brand'])
+        
+        merchant_feats = df_with_merchants.groupby('brand').agg({
+            'overall': ['count', 'mean', 'std'],
+            'reviewerid': 'nunique'
+        }).round(2)
+        merchant_feats.columns = ['review_count', 'avg_rating', 'rating_std', 'customer_count']
+        merchant_feats['rating_std'] = merchant_feats['rating_std'].fillna(0)
+    else:
+        merchant_feats = pd.DataFrame()
 
     features = {
         'user_features': user_feats,
         'item_features': item_feats,
         'interaction_features': inter_feats,
-        'interaction_matrix': sparse_mat
+        'interaction_matrix': merchant_matrix,  # Now customer-merchant matrix
+        'merchant_features': merchant_feats,
+        'customers': customers,
+        'merchants': merchants
     }
 
     if save_path:
         user_feats.to_parquet(f"{save_path}/user_features.parquet")
         item_feats.to_parquet(f"{save_path}/item_features.parquet")
         inter_feats.to_parquet(f"{save_path}/interaction_features.parquet")
+        if not merchant_feats.empty:
+            merchant_feats.to_parquet(f"{save_path}/merchant_features.parquet")
         log.info(f"Features saved to {save_path}")
 
-    log.info(f"Feature creation completed using {len(df):,} reviews")
+    log.info(f"Customer-merchant feature creation completed using {len(df):,} reviews")
     return features
 
 
@@ -189,4 +217,4 @@ def load_and_create_features(cutoff_date=None):
     reviews_raw, products_raw = load_amazon_data_k_core()
     reviews_clean = clean_reviews_data(reviews_raw)
     products_clean = clean_products_data(products_raw)
-    return create_all_features(reviews_clean, products_clean, cutoff_date)
+    return reviews_raw, products_raw, create_all_features(reviews_clean, products_clean, cutoff_date)
