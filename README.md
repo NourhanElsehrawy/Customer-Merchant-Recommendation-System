@@ -34,6 +34,29 @@ A machine learning recommendation system built with Amazon Electronics dataset t
    - Open `notebooks/03_Recommendation_System.ipynb`
    - Run all cells to see recommendations in action
 
+## Running Airflow 
+
+To run the data processing pipeline with Airflow:
+
+1. **Setup Airflow**:
+   ```bash
+   cd airflow
+   docker-compose up -d
+   ```
+
+2. **Access Airflow UI**:
+   - Open http://localhost:8080 in your browser
+   - Login: admin/admin
+
+3. **Run the pipeline**:
+   - Find `amazon_data_loader` DAG
+   - Click "Trigger DAG" to start data processing
+
+4. **Stop Airflow**:
+   ```bash
+   docker-compose down
+   ```
+
 ## Key Features
 
 - **Multiple Models**: Popularity, Collaborative Filtering, Content-Based, Hybrid
